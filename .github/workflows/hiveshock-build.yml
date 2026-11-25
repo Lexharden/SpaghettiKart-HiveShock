@@ -1,0 +1,181 @@
+name: HiveShock Build
+
+# Release builds for the platforms this fork publishes. Also called by release.yml.
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["docs/**", "*.md"]
+  pull_request:
+    paths-ignore: ["docs/**", "*.md"]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Tag or commit to build (empty = the one that triggered the run)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# In a called workflow `github.workflow` is the caller's name, so a release never shares a group with a branch build.
+concurrency:
+  group: ${{ github.workflow }}-build-${{ github.event.pull_request.head.ref || github.ref_name }}-${{ inputs.ref }}
+  cancel-in-progress: ${{ github.workflow == 'HiveShock Build' }}
+
+env:
+  CONTROLLER_DB: https://raw.githubusercontent.com/mdqinc/SDL_GameControllerDB/master/gamecontrollerdb.txt
+
+jobs:
+  o2r:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: true
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ git cmake ninja-build lsb-release
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.14
+        with:
+          key: o2r
+      - name: Generate spaghetti.o2r
+        run: |
+          export PATH="/usr/lib/ccache:$PATH"
+          make -C torch type=release -j"$(nproc)"
+          torch/cmake-build-release/torch pack assets spaghetti.o2r o2r
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spaghetti.o2r
+          path: spaghetti.o2r
+          if-no-files-found: error
+          retention-days: 1
+
+  windows:
+    needs: o2r
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: recursive
+      - name: Build
+        run: |
+          cmake -S . -B build/x64 -G "Visual Studio 17 2022" -T v143 -A x64 -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/x64 --config Release --parallel 10
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/download-artifact@v4
+        with:
+          name: spaghetti.o2r
+          path: o2r
+      - name: Package
+        shell: bash
+        run: |
+          mkdir package
+          cp build/x64/Release/Spaghettify.exe o2r/spaghetti.o2r config.yml package/
+          cp -r yamls meta package/
+          curl -fsSL --retry 3 -o package/gamecontrollerdb.txt "$CONTROLLER_DB"
+          if find package \( -iname '*.z64' -o -iname 'mk64.o2r' \) | grep .; then exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spaghettikart-windows-x64
+          path: package
+          if-no-files-found: error
+
+  macos:
+    needs: o2r
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: arm64, runner: macos-latest }
+          - { arch: intel, runner: macos-15-intel }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: recursive
+      - name: Install dependencies
+        run: brew install ninja cmake
+      - name: Build
+        run: |
+          cmake -S . -B build-cmake -GNinja -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release -DENABLE_VCPKG=ON
+          cmake --build build-cmake -j3
+      - uses: actions/download-artifact@v4
+        with:
+          name: spaghetti.o2r
+          path: build-cmake
+      - name: Package
+        run: |
+          APP=build-cmake/SpaghettiKart.app
+          cp build-cmake/spaghetti.o2r "$APP/Contents/Resources/spaghetti.o2r"
+          curl -fsSL --retry 3 -o "$APP/Contents/Resources/gamecontrollerdb.txt" "$CONTROLLER_DB"
+          # The bundle contents changed, so sign it again (ad hoc).
+          codesign --force --deep --sign - --options runtime --entitlements cmake/macos/entitlements.plist "$APP"
+          if find "$APP" \( -iname '*.z64' -o -iname 'mk64.o2r' \) | grep .; then exit 1; fi
+          mkdir package
+          # ditto keeps the executable bit, which the artifact upload loses.
+          ditto -c -k --keepParent "$APP" package/SpaghettiKart.app.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spaghettikart-macos-${{ matrix.arch }}
+          path: package
+          if-no-files-found: error
+
+  linux:
+    needs: o2r
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: recursive
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./script/Dockerfile
+          push: false
+          load: true
+          tags: spaghettikart-builder:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/project" spaghettikart-builder:latest bash -c "
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_VCPKG=ON &&
+            cmake --build build --parallel"
+          sudo chown -R "$(id -u):$(id -g)" .
+      - uses: actions/download-artifact@v4
+        with:
+          name: spaghetti.o2r
+          path: build
+      - name: Package
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/project" spaghettikart-builder:latest \
+            bash -c "cd build && cpack -G External"
+          sudo chown -R "$(id -u):$(id -g)" .
+          mkdir package
+          find . -maxdepth 3 -name '*.appimage' -not -path './package/*' -print -exec cp {} package/SpaghettiKart.AppImage \;
+          chmod +x package/SpaghettiKart.AppImage
+          curl -fsSL --retry 3 -o package/gamecontrollerdb.txt "$CONTROLLER_DB"
+          (cd build && ../package/SpaghettiKart.AppImage --appimage-extract > /dev/null)
+          test -f build/squashfs-root/usr/bin/spaghetti.o2r
+          if find build/squashfs-root \( -iname '*.z64' -o -iname 'mk64.o2r' \) | grep .; then exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spaghettikart-linux-x64
+          path: package
+          if-no-files-found: error

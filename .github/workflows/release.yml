@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to publish (must already exist, e.g. v1.0.0)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/hiveshock-build.yml
+    with:
+      ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: spaghettikart-*
+          path: artifacts
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir release
+          out="$PWD/release/SpaghettiKart-HiveShock-$TAG"
+          (cd artifacts/spaghettikart-windows-x64 && zip -qr "$out-Windows-x64.zip" .)
+          # Artifacts lose the executable bit; zip keeps it.
+          chmod +x artifacts/spaghettikart-linux-x64/SpaghettiKart.AppImage
+          (cd artifacts/spaghettikart-linux-x64 && zip -qr "$out-Linux-x64.zip" .)
+          cp artifacts/spaghettikart-macos-arm64/SpaghettiKart.app.zip "$out-macOS-arm64.zip"
+          cp artifacts/spaghettikart-macos-intel/SpaghettiKart.app.zip "$out-macOS-intel.zip"
+          cd release
+          sha256sum -- *.zip | tee SHA256SUMS.txt
+      - name: Create GitHub Release
+        run: |
+          flags=()
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$TAG" release/* --verify-tag --title "SpaghettiKart-HiveShock $TAG" --generate-notes "${flags[@]}"

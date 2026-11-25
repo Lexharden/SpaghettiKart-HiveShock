@@ -1,8 +1,8 @@
 name: GenerateBuilds
 
+# This fork builds with hiveshock-build.yml; the upstream workflow is kept for manual runs.
 on:
-  push:
-    branches: ["*"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

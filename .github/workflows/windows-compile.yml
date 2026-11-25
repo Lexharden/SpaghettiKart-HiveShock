@@ -1,8 +1,8 @@
 name: Windows Validation
 
+# This fork builds with hiveshock-build.yml; the upstream workflow is kept for manual runs.
 on:
-  pull_request:
-    branches: [ "*" ]
+  workflow_dispatch:
 
 jobs:
   build:
