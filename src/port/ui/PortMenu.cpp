@@ -603,6 +603,7 @@ void PortMenu::InitElement() {
     Ship::Menu::InitElement();
     AddSettings();
     AddEnhancements();
+    AddNetwork();
     AddDevTools();
 
     if (CVarGetInteger("gSettings.Menu.SidebarSearch", 0)) {

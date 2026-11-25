@@ -1,6 +1,10 @@
 ![Spaghetti Kart](docs/spaghettigithublight.png#gh-light-mode-only)
 ![Spaghetti Kart](docs/spaghettigithubnight.png#gh-dark-mode-only)
 
+## HiveShock fork
+
+This fork adds [HiveShock](https://hiveshock.yafel.dev) support: viewers' gifts, chat and follows become items, traps and effects in the race. Downloads are in [this fork's releases](https://github.com/Lexharden/SpaghettiKart-HiveShock/releases); usage and protocol are in [docs/HIVESHOCK.md](docs/HIVESHOCK.md).
+
 ## Website & Discord
 
 Official Website: https://www.harbourmasters.org/

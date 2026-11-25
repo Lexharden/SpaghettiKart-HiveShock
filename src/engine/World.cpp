@@ -1,3 +1,4 @@
+#include "port/hiveshock/HiveShock.h"
 #include <libultraship.h>
 #include "World.h"
 #include "Cup.h"
@@ -264,6 +265,7 @@ Object* World::GetObjectByIndex(size_t index) {
 
 // Deletes all objects from the world
 void World::CleanWorld(void) {
+    HiveShock_WorldCleared();
     printf("[Game.cpp] Clean World\n");
 
     World::Reset(); // Reset OObjects
@@ -283,6 +285,7 @@ void World::CleanWorld(void) {
 }
 
 void World::CleanActors(void) {
+    HiveShock_WorldCleared();
     World::Reset();
     Actors.clear();
     Lakitus.clear();

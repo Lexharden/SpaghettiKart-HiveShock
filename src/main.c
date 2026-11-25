@@ -41,6 +41,7 @@
 #include "port/Engine.h"
 #include "engine/Matrix.h"
 #include "engine/TrackBrowser.h"
+#include "port/hiveshock/HiveShock.h"
 
 // Declarations (not in this file)
 void func_80091B78(void);
@@ -358,6 +359,9 @@ void update_controller(s32 index) {
         return;
     }
 
+    HiveShock_FilterPad(index, &gControllerPads[index].button, &gControllerPads[index].stick_x,
+                        &gControllerPads[index].stick_y);
+
     controller->rawStickX = gControllerPads[index].stick_x;
     controller->rawStickY = gControllerPads[index].stick_y;
 
@@ -670,6 +674,7 @@ void process_game_tick(void) {
         if (D_8015011E) {
             gCourseTimer += TRACK_TIMER_ITER;
         }
+        HiveShock_GameTick();
         func_802909F0();
         evaluate_collision_for_players_and_actors();
         handle_a_press_for_all_players_during_race();

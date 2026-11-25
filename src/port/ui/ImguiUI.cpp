@@ -7,6 +7,7 @@
 #include "Properties.h"
 #include "TrackProperties.h"
 #include "ContentBrowser.h"
+#include "port/hiveshock/HiveShockOverlay.h"
 
 #include <spdlog/spdlog.h>
 #include <imgui.h>
@@ -39,6 +40,7 @@ std::shared_ptr<Ship::GuiWindow> mSceneExplorerWindow;
 std::shared_ptr<Ship::GuiWindow> mPropertiesWindow;
 std::shared_ptr<Ship::GuiWindow> mTrackPropertiesWindow;
 std::shared_ptr<Ship::GuiWindow> mContentBrowserWindow;
+std::shared_ptr<Ship::GuiWindow> mHiveShockOverlay;
 
 void SetupGuiElements() {
     auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
@@ -86,6 +88,9 @@ void SetupGuiElements() {
     mContentBrowserWindow =
         std::make_shared<TrackEditor::ContentBrowserWindow>("gEditorEnabled", "Content Browser");
     gui->AddGuiWindow(mContentBrowserWindow);
+
+    mHiveShockOverlay = std::make_shared<HiveShock::OverlayWindow>("gHiveShock.OverlayWindow", "HiveShock Overlay");
+    gui->AddGuiWindow(mHiveShockOverlay);
 }
 
 void Destroy() {
@@ -97,6 +102,7 @@ void Destroy() {
     mPropertiesWindow = nullptr;
     mTrackPropertiesWindow = nullptr;
     mContentBrowserWindow = nullptr;
+    mHiveShockOverlay = nullptr;
 }
 
 std::string GetWindowButtonText(const char* text, bool menuOpen) {

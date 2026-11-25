@@ -157,6 +157,11 @@ endif()
 
 include(cmake/SetFlags.cmake)
 
+if(WIN32)
+  # HiveShock sockets
+  target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
+endif()
+
 # ##############################################################################
 # MSVC runtime library
 # ##############################################################################

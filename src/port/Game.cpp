@@ -34,6 +34,7 @@
 #include "engine/TrackBrowser.h"
 #include "engine/RandomItemTable.h"
 #include "engine/sky/Sky.h"
+#include "port/hiveshock/HiveShock.h"
 
 #ifdef _WIN32
 #include <locale.h>
@@ -157,9 +158,12 @@ void CustomEngineInit() {
     RegisterItems(gItemRegistry);
     RegisterItemTables(gItemTableRegistry);
     printf("[Game] Game Content Registered!\n");
+
+    HiveShock::Apply();
 }
 
 void CustomEngineDestroy() {
+    HiveShock::Shutdown();
     gTrackRegistry.Clear();
     gActorRegistry.Clear();
     gMushroomCup.reset();
