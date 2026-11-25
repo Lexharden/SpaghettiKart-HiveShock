@@ -7094,7 +7094,7 @@ void func_8001ABE0(UNUSED s32 arg0, UNUSED CpuItemStrategyData* arg1) {
 }
 
 void clear_expired_strategies(CpuItemStrategyData* arg0) {
-    if ((arg0->actorIndex < 0) || (arg0->actorIndex >= 0x64)) {
+    if ((arg0->actorIndex < 0) || (arg0->actorIndex >= (s32) ACTOR_LIST_SIZE)) {
         arg0->branch = CPU_STRATEGY_WAIT_NEXT_ITEM;
         arg0->timer = 0;
     }
