@@ -13,6 +13,16 @@ include(cmake/GetVersion.cmake)
 # Set some Cmake variable
 include(cmake/SetCmakeVar.cmake)
 
+# libultraship treats any texture address below 0x10000000 as an unresolved N64
+# segment address and skips it. Without PIE (the default of some distros, e.g.
+# Fedora) the textures compiled into the executable live there and the game
+# crashes in the intro.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include(CheckPIESupported)
+  check_pie_supported()
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # add_compile_options(-fsanitize=address) add_link_options(-fsanitize=address)
 
 set(YAML_CPP_STATIC_DEFINE ON)
