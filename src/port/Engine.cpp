@@ -33,6 +33,7 @@
 #include "SpaghettiGui.h"
 
 #include "port/interpolation/FrameInterpolation.h"
+#include "port/net/LanSession.h"
 #include <fast/Fast3dWindow.h>
 #include <fast/interpreter.h>
 // #include <Fast3D/gfx_rendering_api.h>
@@ -381,7 +382,10 @@ void GameEngine::StartFrame() const {
 
     switch (dwScancode) {
         case KbScancode::LUS_KB_TAB: {
-            // Toggle HD Assets
+            // Toggle HD Assets. Not during a LAN game: the setting is shared and changing it on one PC desyncs it.
+            if (LanSession_InGame()) {
+                break;
+            }
             CVarSetInteger("gEnhancements.Mods.AlternateAssets", !CVarGetInteger("gEnhancements.Mods.AlternateAssets", 0));
             break;
         }
