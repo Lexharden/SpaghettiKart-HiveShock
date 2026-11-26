@@ -212,6 +212,11 @@ void PortMenu::AddNetwork() {
 
     AddWidget(path, "HiveShock", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "Status", WIDGET_TEXT).PreFunc([](WidgetInfo& info) {
+        // Ports and the token take effect once nothing is being edited: dragging a port slider must not restart the
+        // listener on every step.
+        if (!ImGui::IsAnyItemActive()) {
+            HiveShock::ApplyIfChanged();
+        }
         const auto status = HiveShock::GetStatus();
         switch (status.state) {
             case HiveShock::State::Listening:
@@ -276,13 +281,12 @@ void PortMenu::AddNetwork() {
     AddWidget(path, "Effects port: %d", WIDGET_CVAR_SLIDER_INT)
         .CVar("gHiveShock.Port")
         .Options(IntSliderOptions().Min(1024).Max(65535).DefaultValue(43000).Tooltip(
-            "Port the HiveShock app sends effects to (default 43000)."))
-        .Callback([](WidgetInfo&) { HiveShock::Apply(); });
+            "Port the HiveShock app sends effects to (default 43000). Applied when you let go of the slider."));
     AddWidget(path, "Events port: %d", WIDGET_CVAR_SLIDER_INT)
         .CVar("gHiveShock.EventPort")
         .Options(IntSliderOptions().Min(1024).Max(65535).DefaultValue(43002).Tooltip(
-            "Port of the HiveShock app that receives falls and the queue (default 43002)."))
-        .Callback([](WidgetInfo&) { HiveShock::Apply(); });
+            "Port of the HiveShock app that receives falls and the queue (default 43002). Applied when you let go of "
+            "the slider."));
 
     path.column = SECTION_COLUMN_2;
     AddWidget(path, "Activity", WIDGET_SEPARATOR_TEXT);

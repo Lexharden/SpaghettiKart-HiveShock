@@ -22,7 +22,8 @@
 
 #if defined(__SWITCH__) || defined(__WIIU__)
 
-HiveShockServer::HiveShockServer(LineHandler onLine) : mOnLine(std::move(onLine)) {
+HiveShockServer::HiveShockServer(LineHandler onLine, RejectHandler onReject)
+    : mOnLine(std::move(onLine)), mOnReject(std::move(onReject)) {
 }
 HiveShockServer::~HiveShockServer() = default;
 bool HiveShockServer::IsSupported() {
@@ -37,7 +38,10 @@ void HiveShockServer::SendEvent(std::string) {
 }
 void HiveShockServer::Run() {
 }
-void HiveShockServer::FlushEvents() {
+void HiveShockServer::RunEvents() {
+}
+bool HiveShockServer::DeliverEvents(const std::string&) {
+    return false;
 }
 
 #else
@@ -62,6 +66,8 @@ constexpr size_t kMaxEvents = 64;
 constexpr int kPollMs = 100;
 constexpr int kEventTimeoutMs = 200;
 constexpr auto kIdleTimeout = std::chrono::seconds(10);
+// After a failed delivery (the app is closed), events are dropped for this long instead of trying for each one.
+constexpr auto kEventRetryDelay = std::chrono::seconds(1);
 
 #if defined(_WIN32)
 using Socket = SOCKET;
@@ -133,11 +139,25 @@ struct Client {
     Socket socket = kBadSocket;
     std::string buffer;
     Clock::time_point lastActivity{};
+    bool checked = false; // the first character has been seen
 };
+
+// Every command is a JSON object, so a connection must start with '{'. Anything else is refused before a single line is
+// read: above all an HTTP request, which a web page can make to 127.0.0.1 and whose body would otherwise be a command.
+enum class Opening { Unknown, Json, Refused };
+
+Opening CheckOpening(const std::string& buffer) {
+    const size_t first = buffer.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return Opening::Unknown;
+    }
+    return buffer[first] == '{' ? Opening::Json : Opening::Refused;
+}
 
 } // namespace
 
-HiveShockServer::HiveShockServer(LineHandler onLine) : mOnLine(std::move(onLine)) {
+HiveShockServer::HiveShockServer(LineHandler onLine, RejectHandler onReject)
+    : mOnLine(std::move(onLine)), mOnReject(std::move(onReject)) {
 }
 
 HiveShockServer::~HiveShockServer() {
@@ -185,13 +205,21 @@ std::string HiveShockServer::Start(uint16_t port, bool lan, uint16_t eventPort) 
     mListen = static_cast<intptr_t>(sock);
     mRun = true;
     mThread = std::thread([this] { Run(); });
+    mEventThread = std::thread([this] { RunEvents(); });
     return "";
 }
 
 void HiveShockServer::Stop() {
-    mRun = false;
+    {
+        std::lock_guard<std::mutex> lock(mEventMutex);
+        mRun = false;
+    }
+    mEventReady.notify_all();
     if (mThread.joinable()) {
         mThread.join();
+    }
+    if (mEventThread.joinable()) {
+        mEventThread.join();
     }
     if (mListen != -1) {
         CloseSocket(static_cast<Socket>(mListen));
@@ -209,32 +237,46 @@ void HiveShockServer::Stop() {
 }
 
 void HiveShockServer::SendEvent(std::string line) {
-    if (!mRun) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(mEventMutex);
-    if (mEvents.size() < kMaxEvents) {
+    {
+        std::lock_guard<std::mutex> lock(mEventMutex);
+        if (!mRun || mEvents.size() >= kMaxEvents) {
+            return;
+        }
         mEvents.push_back(std::move(line));
+    }
+    mEventReady.notify_one();
+}
+
+// Event thread: waits for events and sends each batch on a short connection, like the app sends commands.
+void HiveShockServer::RunEvents() {
+    Clock::time_point retryAt{};
+    while (true) {
+        std::string payload;
+        {
+            std::unique_lock<std::mutex> lock(mEventMutex);
+            mEventReady.wait(lock, [this] { return !mRun || !mEvents.empty(); });
+            if (!mRun) {
+                return;
+            }
+            for (const auto& line : mEvents) {
+                payload += line;
+                payload += '\n';
+            }
+            mEvents.clear();
+        }
+        if (Clock::now() < retryAt) {
+            continue; // best effort: nobody was listening a moment ago
+        }
+        if (!DeliverEvents(payload)) {
+            retryAt = Clock::now() + kEventRetryDelay;
+        }
     }
 }
 
-void HiveShockServer::FlushEvents() {
-    std::string payload;
-    {
-        std::lock_guard<std::mutex> lock(mEventMutex);
-        for (const auto& line : mEvents) {
-            payload += line;
-            payload += '\n';
-        }
-        mEvents.clear();
-    }
-    if (payload.empty()) {
-        return;
-    }
-
+bool HiveShockServer::DeliverEvents(const std::string& payload) {
     const Socket sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == kBadSocket) {
-        return;
+        return false;
     }
     Configure(sock);
 
@@ -265,6 +307,7 @@ void HiveShockServer::FlushEvents() {
         }
     }
     CloseSocket(sock);
+    return connected && sent == payload.size();
 }
 
 void HiveShockServer::Run() {
@@ -281,8 +324,6 @@ void HiveShockServer::Run() {
     };
 
     while (mRun) {
-        FlushEvents();
-
         fds.clear();
         PollFd listenFd{};
         listenFd.fd = static_cast<Socket>(mListen);
@@ -312,6 +353,17 @@ void HiveShockServer::Run() {
                 if (n > 0) {
                     client.lastActivity = now;
                     client.buffer.append(chunk, static_cast<size_t>(n));
+                    if (!client.checked) {
+                        const Opening opening = CheckOpening(client.buffer);
+                        client.checked = opening != Opening::Unknown;
+                        if (opening == Opening::Refused) {
+                            client.buffer.clear(); // nothing of it reaches the game
+                            CloseSocket(client.socket);
+                            clients.erase(clients.begin() + static_cast<std::ptrdiff_t>(i));
+                            mOnReject("not a JSON command (an HTTP request from a web page?)");
+                            continue;
+                        }
+                    }
                     size_t newline;
                     while ((newline = client.buffer.find('\n')) != std::string::npos) {
                         emit(client.buffer.substr(0, newline));

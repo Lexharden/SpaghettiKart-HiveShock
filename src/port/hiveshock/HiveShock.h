@@ -53,6 +53,8 @@ struct Notice {
 
 // Starts, stops or restarts the listener according to the CVars. Game thread only.
 void Apply();
+// Apply() only if the settings differ from the ones in effect. Cheap: meant to be called every frame.
+void ApplyIfChanged();
 void Shutdown();
 
 Status GetStatus();
