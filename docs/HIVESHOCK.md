@@ -22,6 +22,10 @@ The app opens a short TCP connection to port `43000` and sends one JSON object p
 
 `clear_queue` forgets everything that is waiting and works anywhere.
 
+A connection must start with `{`. Anything else, such as an HTTP request that a web page can make to `127.0.0.1`, is
+closed before any of it is read, so a website cannot send effects through the browser. Set `gHiveShock.Token` when
+LAN connections are allowed.
+
 The game reports to `127.0.0.1:43002` (best effort): `player_death` when Lakitu has to rescue a player, and
 `spawn_queue` with the waiting effects and live traps.
 
@@ -49,8 +53,10 @@ The single source is `kActions` in `src/port/hiveshock/HiveShockEffects.cpp`; th
 - **Chaos** (timed): `invert`, `drunk`, `stall`, `full_throttle`, `hops`, `slow`, `mini`
 - **Rivals**: `rivals_boost`, `rivals_star`, `rivals_spinout`, `rivals_lightning`
 
-`blue_shell` and `bomb_karts` need a racing path, so in battle mode they wait for the next race. A time trial that
-receives an effect cannot save its ghost.
+`blue_shell` and `bomb_karts` need a racing path, so in battle mode they wait for the next race. The same goes for
+`item_steal`/`item_use` without an item and for `rivals_*` without CPU karts (time trials, multiplayer VS): they stay
+queued, without holding up the rest, until they can run or the queue is cleared. A time trial that receives an
+effect cannot save its ghost.
 
 ## CVars (`gHiveShock.*`)
 
@@ -58,11 +64,15 @@ receives an effect cannot save its ghost.
 `MinGapMs` (250), `HitGapMs` (2500), `MaxTraps` (40), `Overlay` (1), `OverlaySide` (0 left, 1 right), `OverlayScale` (1.0),
 `Cat.<Category>` (1).
 
+Port and token changes take effect when the slider is released (or, for a CVar set from the console, the next time
+the Network > HiveShock menu is open). Events go out on their own thread: a closed app on the event port never delays
+the commands.
+
 ## Code
 
 | File | Role |
 |---|---|
-| `src/port/hiveshock/HiveShockServer.*` | Sockets. One thread, no game headers. |
+| `src/port/hiveshock/HiveShockServer.*` | Sockets. A thread for commands and one for events, no game headers. |
 | `src/port/hiveshock/HiveShock.*` | Parsing, queue, scheduling, events, C hooks. |
 | `src/port/hiveshock/HiveShockEffects.*` | Action table and effects. Game thread only. |
 | `src/port/hiveshock/HiveShockOverlay.*` | On-stream feed. |

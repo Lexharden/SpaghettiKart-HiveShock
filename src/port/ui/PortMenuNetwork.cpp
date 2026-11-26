@@ -2,8 +2,10 @@
 #include "UIWidgets.h"
 #include "port/hiveshock/HiveShock.h"
 #include "port/hiveshock/HiveShockEffects.h"
+#include "port/net/LanSession.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -63,6 +65,146 @@ static void DrawHiveShockEffects(WidgetInfo&) {
     }
 }
 
+
+static void SaveCVarsSoon() {
+    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+}
+
+// Input field bound to a string CVar.
+static void CVarInputText(const char* label, const char* cvar, const char* fallback, float width) {
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "%s", CVarGetString(cvar, fallback));
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::InputText(label, buffer, sizeof(buffer))) {
+        CVarSetString(cvar, buffer);
+        SaveCVarsSoon();
+    }
+}
+
+static void DrawLanPlayers(const Lan::Status& status) {
+    for (int i = 0; i < Lan::kMaxPlayers; i++) {
+        const auto& p = status.players[i];
+        if (!p.present) {
+            ImGui::TextDisabled("Player %d: free", i + 1);
+            continue;
+        }
+        std::string line = "Player " + std::to_string(i + 1) + ": " + p.name;
+        if (i == 0) {
+            line += " (host)";
+        }
+        if (i == status.localSlot) {
+            line += " - you";
+        } else if (p.pingMs >= 0) {
+            line += "  " + std::to_string(p.pingMs) + " ms";
+        }
+        ImGui::TextUnformatted(line.c_str());
+    }
+}
+
+static void DrawLan(WidgetInfo&) {
+    static std::string sError;
+    const Lan::Status status = Lan::GetStatus();
+
+    if (!Lan::IsSupported()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "LAN play is not supported on this platform.");
+        return;
+    }
+
+    auto showError = [](const std::string& err) {
+        if (!err.empty()) {
+            sError = err;
+        }
+    };
+
+    switch (status.state) {
+        case Lan::State::Idle: {
+            CVarInputText("Your name", "gLan.Name", "Player", 200.0f);
+            ImGui::Spacing();
+            if (ImGui::Button("Host a game")) {
+                sError.clear();
+                showError(Lan::Host(CVarGetString("gLan.Name", "Player")));
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("UDP %d", Lan::kGamePort);
+
+            ImGui::SeparatorText("Join");
+            CVarInputText("##address", "gLan.Address", "192.168.1.", 200.0f);
+            ImGui::SameLine();
+            if (ImGui::Button("Join")) {
+                sError.clear();
+                showError(Lan::Join(CVarGetString("gLan.Address", ""), CVarGetString("gLan.Name", "Player")));
+            }
+            if (ImGui::Button("Search the LAN")) {
+                Lan::SearchGames();
+            }
+            for (const auto& game : Lan::FoundGames()) {
+                ImGui::PushID(game.address.c_str());
+                const std::string label = game.name + " - " + std::to_string(game.players) + "/4 - " + game.address +
+                                          (game.inGame ? " (playing)" : "");
+                ImGui::BeginDisabled(game.inGame);
+                if (ImGui::Button("Join##found")) {
+                    sError.clear();
+                    CVarSetString("gLan.Address", game.address.c_str());
+                    SaveCVarsSoon();
+                    showError(Lan::Join(game.address, CVarGetString("gLan.Name", "Player")));
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextUnformatted(label.c_str());
+                ImGui::PopID();
+            }
+            break;
+        }
+        case Lan::State::Joining:
+            ImGui::TextUnformatted(status.lastMessage.c_str());
+            if (ImGui::Button("Cancel")) {
+                Lan::Leave();
+            }
+            break;
+        case Lan::State::Lobby:
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), status.isHost ? "Hosting. Waiting for players..."
+                                                                             : "In the lobby. The host starts the game.");
+            DrawLanPlayers(status);
+            ImGui::Spacing();
+            if (status.isHost) {
+                ImGui::BeginDisabled(status.playerCount < 2);
+                if (ImGui::Button("Start")) {
+                    sError.clear();
+                    showError(Lan::StartGame());
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+            }
+            if (ImGui::Button("Leave")) {
+                Lan::Leave();
+            }
+            break;
+        case Lan::State::InGame:
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Playing over LAN (frame %u)", status.frame);
+            DrawLanPlayers(status);
+            ImGui::TextWrapped("Player 1 picks the number of players and the mode in the main menu; everyone picks "
+                               "their own character.");
+            if (ImGui::Button("Leave the game")) {
+                Lan::Leave();
+            }
+            break;
+    }
+
+    if (!sError.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", sError.c_str());
+    } else if (status.state == Lan::State::Idle && !status.lastMessage.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", status.lastMessage.c_str());
+    }
+
+    ImGui::SeparatorText("How it works");
+    ImGui::TextWrapped(
+        "Every PC runs the game and only the controllers travel over the network, so everyone must use the same "
+        "package on the same OS (Windows with Windows, Linux with Linux, Mac with Mac). The game uses the host's "
+        "settings and save data while it lasts; nothing is saved on the other PCs. HiveShock effects pause during a "
+        "LAN game. Your controller 1 drives your player.");
+    ImGui::TextDisabled("Build: %s", Lan::BuildId().c_str());
+}
+
 void PortMenu::AddNetwork() {
     AddMenuEntry("Network", "gSettings.Menu.NetworkSidebarSection");
     AddSidebarEntry("Network", "HiveShock", 2);
@@ -70,6 +212,11 @@ void PortMenu::AddNetwork() {
 
     AddWidget(path, "HiveShock", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "Status", WIDGET_TEXT).PreFunc([](WidgetInfo& info) {
+        // Ports and the token take effect once nothing is being edited: dragging a port slider must not restart the
+        // listener on every step.
+        if (!ImGui::IsAnyItemActive()) {
+            HiveShock::ApplyIfChanged();
+        }
         const auto status = HiveShock::GetStatus();
         switch (status.state) {
             case HiveShock::State::Listening:
@@ -134,13 +281,12 @@ void PortMenu::AddNetwork() {
     AddWidget(path, "Effects port: %d", WIDGET_CVAR_SLIDER_INT)
         .CVar("gHiveShock.Port")
         .Options(IntSliderOptions().Min(1024).Max(65535).DefaultValue(43000).Tooltip(
-            "Port the HiveShock app sends effects to (default 43000)."))
-        .Callback([](WidgetInfo&) { HiveShock::Apply(); });
+            "Port the HiveShock app sends effects to (default 43000). Applied when you let go of the slider."));
     AddWidget(path, "Events port: %d", WIDGET_CVAR_SLIDER_INT)
         .CVar("gHiveShock.EventPort")
         .Options(IntSliderOptions().Min(1024).Max(65535).DefaultValue(43002).Tooltip(
-            "Port of the HiveShock app that receives falls and the queue (default 43002)."))
-        .Callback([](WidgetInfo&) { HiveShock::Apply(); });
+            "Port of the HiveShock app that receives falls and the queue (default 43002). Applied when you let go of "
+            "the slider."));
 
     path.column = SECTION_COLUMN_2;
     AddWidget(path, "Activity", WIDGET_SEPARATOR_TEXT);
@@ -166,6 +312,11 @@ void PortMenu::AddNetwork() {
         .Callback([](WidgetInfo&) { HiveShock::ClearPending(); });
     AddWidget(path, "Effects (click to test during a race)", WIDGET_SEPARATOR_TEXT);
     AddWidget(path, "HiveShock effects", WIDGET_CUSTOM).CustomFunction(DrawHiveShockEffects);
+
+    AddSidebarEntry("Network", "LAN", 1);
+    WidgetPath lanPath = { "Network", "LAN", SECTION_COLUMN_1 };
+    AddWidget(lanPath, "LAN play", WIDGET_SEPARATOR_TEXT);
+    AddWidget(lanPath, "LAN", WIDGET_CUSTOM).CustomFunction(DrawLan);
 }
 
 } // namespace GameUI

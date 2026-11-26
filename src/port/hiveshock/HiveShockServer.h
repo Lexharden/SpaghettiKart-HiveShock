@@ -1,9 +1,11 @@
 #pragma once
 
 // Network half of the HiveShock bridge. Knows nothing about the game: it hands complete text lines to a callback and
-// sends text lines back. Everything runs on one thread, so there is nothing to detach and Stop() always joins.
+// sends text lines back. One thread accepts and reads, another delivers the events, so a missing or slow app on the
+// event port never delays the commands. Stop() always joins both.
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -13,9 +15,10 @@
 
 class HiveShockServer {
   public:
-    using LineHandler = std::function<void(const std::string& line)>; // called on the network thread
+    using LineHandler = std::function<void(const std::string& line)>;     // called on the network thread
+    using RejectHandler = std::function<void(const std::string& reason)>; // a connection refused before any line
 
-    explicit HiveShockServer(LineHandler onLine);
+    HiveShockServer(LineHandler onLine, RejectHandler onReject);
     ~HiveShockServer();
     HiveShockServer(const HiveShockServer&) = delete;
     HiveShockServer& operator=(const HiveShockServer&) = delete;
@@ -35,13 +38,17 @@ class HiveShockServer {
 
   private:
     void Run();
-    void FlushEvents();
+    void RunEvents();
+    bool DeliverEvents(const std::string& payload);
 
     LineHandler mOnLine;
+    RejectHandler mOnReject;
     std::thread mThread;
+    std::thread mEventThread;
     std::atomic<bool> mRun{ false };
     std::atomic<uint32_t> mClients{ 0 };
     std::mutex mEventMutex;
+    std::condition_variable mEventReady;
     std::deque<std::string> mEvents;
     intptr_t mListen = -1;
     uint16_t mEventPort = 0;

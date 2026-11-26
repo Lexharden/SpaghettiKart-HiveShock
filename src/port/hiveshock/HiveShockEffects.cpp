@@ -801,6 +801,10 @@ void MarkRaceModified() {
 void ClearTraps() {
     LiveTraps(); // forgets the ones that are already gone
     for (Actor* actor : sTraps) {
+        // A banana still falling to the road is skipped by the game's destroy: treat it as landed.
+        if (actor->type == ACTOR_BANANA && reinterpret_cast<BananaActor*>(actor)->state == DROPPED_BANANA) {
+            reinterpret_cast<BananaActor*>(actor)->state = BANANA_ON_GROUND;
+        }
         destroy_destructable_actor(actor); // they stay in the list until their animation ends
     }
     for (const auto& entry : sBombKarts) {

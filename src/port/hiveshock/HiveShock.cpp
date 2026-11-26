@@ -1,6 +1,7 @@
 #include "HiveShock.h"
 #include "HiveShockEffects.h"
 #include "HiveShockServer.h"
+#include "port/net/LanSession.h"
 
 #include <algorithm>
 #include <array>
@@ -44,6 +45,29 @@ Status sStatus;
 std::string sToken;
 
 std::unique_ptr<HiveShockServer> sServer;
+
+// What Apply() last put into effect, so that a settings change can be noticed without restarting on every slider step.
+struct Settings {
+    bool enabled = false;
+    int port = 0;
+    int eventPort = 0;
+    bool lan = false;
+    std::string token;
+    bool operator==(const Settings&) const = default;
+};
+Settings sApplied;
+bool sEverApplied = false;
+
+Settings ReadSettings() {
+    Settings s;
+    s.enabled = CVarGetInteger("gHiveShock.Enabled", 0) != 0;
+    s.port = std::clamp(CVarGetInteger("gHiveShock.Port", 43000), 1024, 65535);
+    s.eventPort = std::clamp(CVarGetInteger("gHiveShock.EventPort", 43002), 1024, 65535);
+    s.lan = CVarGetInteger("gHiveShock.AllowLAN", 0) != 0;
+    s.token = CVarGetString("gHiveShock.Token", "");
+    return s;
+}
+
 std::chrono::steady_clock::time_point sLastRun{};
 int sFalls = 0;
 bool sWasRunning = false;
@@ -272,14 +296,17 @@ double Now() {
 void Apply() {
     sServer.reset(); // stops and joins
 
-    const bool enabled = CVarGetInteger("gHiveShock.Enabled", 0) != 0;
-    const int port = std::clamp(CVarGetInteger("gHiveShock.Port", 43000), 1024, 65535);
-    const int eventPort = std::clamp(CVarGetInteger("gHiveShock.EventPort", 43002), 1024, 65535);
-    const bool lan = CVarGetInteger("gHiveShock.AllowLAN", 0) != 0;
+    const Settings settings = ReadSettings();
+    sApplied = settings;
+    sEverApplied = true;
+    const bool enabled = settings.enabled;
+    const int port = settings.port;
+    const int eventPort = settings.eventPort;
+    const bool lan = settings.lan;
 
     {
         std::lock_guard<std::mutex> lock(sMutex);
-        sToken = CVarGetString("gHiveShock.Token", "");
+        sToken = settings.token;
         sStatus.state = HiveShockServer::IsSupported() ? State::Disabled : State::Unsupported;
         sStatus.error.clear();
         sStatus.port = port;
@@ -296,7 +323,7 @@ void Apply() {
         return;
     }
 
-    auto server = std::make_unique<HiveShockServer>(OnLine);
+    auto server = std::make_unique<HiveShockServer>(OnLine, Reject);
     const std::string error = server->Start(static_cast<uint16_t>(port), lan, static_cast<uint16_t>(eventPort));
     std::lock_guard<std::mutex> lock(sMutex);
     if (!error.empty()) {
@@ -308,6 +335,13 @@ void Apply() {
     sServer = std::move(server);
     sStatus.state = State::Listening;
     SPDLOG_INFO("[HiveShock] listening on {}:{}", lan ? "0.0.0.0" : "127.0.0.1", port);
+}
+
+void ApplyIfChanged() {
+    if (sEverApplied && ReadSettings() == sApplied) {
+        return;
+    }
+    Apply();
 }
 
 void Shutdown() {
@@ -348,6 +382,11 @@ void ClearPending() {
 extern "C" void HiveShock_GameTick(void) {
     using namespace HiveShock;
 
+    // A LAN game is simulated on every machine from the shared pads only: effects would desync it.
+    if (LanSession_InGame()) {
+        return;
+    }
+
     if (!RaceRunning()) {
         // Countdown, results, or a new race: the queue waits, what was active ends.
         if (sWasRunning) {
@@ -382,6 +421,9 @@ extern "C" void HiveShock_WorldCleared(void) {
 
 extern "C" void HiveShock_FilterPad(int controllerIndex, unsigned short* buttons, signed char* stickX,
                                     signed char* stickY) {
+    if (LanSession_InGame()) {
+        return;
+    }
     uint16_t b = *buttons;
     int8_t x = *stickX;
     int8_t y = *stickY;

@@ -3,7 +3,7 @@
 
 ## HiveShock fork
 
-This fork adds [HiveShock](https://hiveshock.yafel.dev) support: viewers' gifts, chat and follows become items, traps and effects in the race. Downloads are in [this fork's releases](https://github.com/Lexharden/SpaghettiKart-HiveShock/releases); usage and protocol are in [docs/HIVESHOCK.md](docs/HIVESHOCK.md).
+This fork adds [HiveShock](https://hiveshock.yafel.dev) support: viewers' gifts, chat and follows become items, traps and effects in the race. Downloads are in [this fork's releases](https://github.com/Lexharden/SpaghettiKart-HiveShock/releases); usage and protocol are in [docs/HIVESHOCK.md](docs/HIVESHOCK.md). It also adds LAN play for up to four PCs: see [docs/LAN.md](docs/LAN.md).
 
 ## Website & Discord
 
