@@ -296,7 +296,7 @@ std::string CleanName(std::string name) {
     name.erase(std::remove_if(name.begin(), name.end(), [](char c) { return static_cast<unsigned char>(c) < 32; }),
                name.end());
     if (name.empty()) {
-        name = "Jugador";
+        name = "Player";
     }
     return name.substr(0, 16);
 }
@@ -482,14 +482,14 @@ void HostHandle(PacketType type, Reader& r, const LanAddress& from) {
             }
             Writer reject(kReject);
             if (build != Lan::BuildId()) {
-                reject.Str("Version distinta: el host usa " + Lan::BuildId() + " y tu " + build +
-                           ". Usad el mismo paquete en el mismo sistema.");
+                reject.Str("Different version: the host runs " + Lan::BuildId() + " and you run " + build +
+                           ". Everyone needs the same package on the same OS.");
                 Send(from, reject);
                 return;
             }
             if (slot < 0) {
                 if (s.started) {
-                    reject.Str("La partida ya ha empezado.");
+                    reject.Str("The game has already started.");
                     Send(from, reject);
                     return;
                 }
@@ -499,7 +499,7 @@ void HostHandle(PacketType type, Reader& r, const LanAddress& from) {
                     }
                 }
                 if (slot < 0) {
-                    reject.Str("La partida esta llena (4 jugadores).");
+                    reject.Str("The game is full (4 players).");
                     Send(from, reject);
                     return;
                 }
@@ -541,8 +541,8 @@ void HostHandle(PacketType type, Reader& r, const LanAddress& from) {
             if (r.Ok() && s.hashFrames[f % kRing] == f && s.hashes[f % kRing] != hash) {
                 SPDLOG_ERROR("[LAN] Desync with {} at frame {}: host {:016x}, client {:016x}", s.peers[slot].name, f,
                              s.hashes[f % kRing], hash);
-                Finish("Desincronizacion con " + s.peers[slot].name + " en el frame " + std::to_string(f) +
-                           ". Revisad que todos usais el mismo paquete y los mismos mods.",
+                Finish("Out of sync with " + s.peers[slot].name + " at frame " + std::to_string(f) +
+                           ". Check that everyone uses the same package and the same mods.",
                        true);
             }
             break;
@@ -566,7 +566,7 @@ void HostHandle(PacketType type, Reader& r, const LanAddress& from) {
             if (slot > 0) {
                 const std::string name = s.peers[slot].name;
                 if (s.started) {
-                    Finish(name + " ha salido de la partida.", true);
+                    Finish(name + " left the game.", true);
                 } else {
                     s.peers[slot] = Peer{};
                     HostSendLobby();
@@ -816,8 +816,8 @@ void ClientService() {
             hello.Str(s.localName);
             Send(s.hostAddress, hello);
             if (now - s.joinStarted > kJoinTimeout) {
-                Finish("No hay respuesta de " + s.hostAddress.ToString() +
-                           ". Revisa la IP y que el firewall permita UDP " + std::to_string(Lan::kGamePort) + ".",
+                Finish("No answer from " + s.hostAddress.ToString() +
+                           ". Check the address and that the firewall allows UDP " + std::to_string(Lan::kGamePort) + ".",
                        false);
             }
             return;
@@ -827,7 +827,7 @@ void ClientService() {
             std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()));
         Send(s.hostAddress, ping);
         if (!s.started && now - s.peers[0].lastHeard > kLobbyTimeout) {
-            Finish("Se perdio la conexion con el host.", false);
+            Finish("Lost the connection to the host.", false);
         }
     }
 }
@@ -842,12 +842,19 @@ void Service() {
 
 std::string NameOf(int slot) {
     const std::string& n = S().peers[slot].name;
-    return n.empty() ? "jugador " + std::to_string(slot + 1) : n;
+    return n.empty() ? "player " + std::to_string(slot + 1) : n;
 }
 
 // Fills `pads` with the agreed frame, waiting for it if necessary. False if the session ended meanwhile.
 bool LockstepFrame(OSContPad* pads) {
     Session& s = S();
+    // The menus stay usable during a game: whatever was changed there that would desync it is put back.
+    gTickLogic = s.hostTickLogic;
+    for (const char* name : kForcedOff) {
+        if (CVarGetInteger(name, 0) != 0) {
+            CVarSetInteger(name, 0);
+        }
+    }
     // This machine's pad goes into the frame `kInputDelay` ahead.
     FrameSlot& own = Slot(s.frame + kInputDelay);
     own.pads[s.localSlot] = FromPad(pads[0]);
@@ -888,7 +895,7 @@ bool LockstepFrame(OSContPad* pads) {
             }
         }
         if (now - waitStart > kGameTimeout) {
-            Finish(s.waitingFor.empty() ? "Se perdio la conexion." : s.waitingFor + " no responde.", true);
+            Finish(s.waitingFor.empty() ? "Lost the connection." : s.waitingFor + " is not responding.", true);
             return false;
         }
         s.socket.WaitReadable(1);
@@ -943,7 +950,7 @@ extern "C" void LanSession_ExchangePads(void* rawPads) {
         if (const char* v = EnvValue("SPAGHETTI_LAN_HOST")) {
             err = Lan::Host(v);
         } else if (const char* v = EnvValue("SPAGHETTI_LAN_JOIN")) {
-            err = Lan::Join(v, EnvValue("SPAGHETTI_LAN_NAME") ? EnvValue("SPAGHETTI_LAN_NAME") : "Cliente");
+            err = Lan::Join(v, EnvValue("SPAGHETTI_LAN_NAME") ? EnvValue("SPAGHETTI_LAN_NAME") : "Client");
         }
         if (!err.empty()) {
             SPDLOG_ERROR("[LAN] {}", err);
@@ -1045,7 +1052,7 @@ std::string BuildId() {
 std::string Host(const std::string& playerName) {
     Session& s = S();
     if (s.state != State::Idle) {
-        return "Ya estas en una partida LAN.";
+        return "Already in a LAN game.";
     }
     if (std::string err = s.socket.Open(kGamePort, false); !err.empty()) {
         return err;
@@ -1066,7 +1073,7 @@ std::string Host(const std::string& playerName) {
 std::string Join(const std::string& address, const std::string& playerName) {
     Session& s = S();
     if (s.state != State::Idle) {
-        return "Ya estas en una partida LAN.";
+        return "Already in a LAN game.";
     }
     std::string host = address;
     uint16_t port = kGamePort;
@@ -1076,7 +1083,7 @@ std::string Join(const std::string& address, const std::string& playerName) {
     }
     LanAddress target;
     if (!LanSocket::Resolve(host, port, target)) {
-        return "No se reconoce la direccion " + address + ".";
+        return "Cannot understand the address " + address + ".";
     }
     if (std::string err = s.socket.Open(0, false); !err.empty()) {
         return err;
@@ -1089,17 +1096,17 @@ std::string Join(const std::string& address, const std::string& playerName) {
     s.joinStarted = Clock::now();
     s.lastKeepAlive = {};
     s.state = State::Joining;
-    s.lastMessage = "Conectando con " + target.ToString() + "...";
+    s.lastMessage = "Connecting to " + target.ToString() + "...";
     return {};
 }
 
 std::string StartGame() {
     Session& s = S();
     if (!s.isHost || s.state != State::Lobby) {
-        return "Solo el host puede empezar desde la sala.";
+        return "Only the host can start, from the lobby.";
     }
     if (PlayerCount() < 2) {
-        return "Hace falta al menos otro jugador.";
+        return "At least one more player is needed.";
     }
     s.seed = static_cast<uint16_t>(std::random_device{}());
     s.hostTickLogic = gTickLogic;
@@ -1139,7 +1146,7 @@ std::string StartGame() {
 }
 
 void Leave() {
-    Finish("Has salido de la partida LAN.", true);
+    Finish("You left the LAN game.", true);
 }
 
 void SearchGames() {
