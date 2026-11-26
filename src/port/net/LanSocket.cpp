@@ -134,7 +134,7 @@ bool LanSocket::IsOpen() const {
     return mSocket != static_cast<intptr_t>(kBadSocket) && mSocket != -1;
 }
 
-std::string LanSocket::Open(uint16_t port, bool allowBroadcast) {
+std::string LanSocket::Open(uint16_t port, bool allowBroadcast, bool shared) {
     Close();
 #if defined(_WIN32)
     WSADATA data;
@@ -150,7 +150,15 @@ std::string LanSocket::Open(uint16_t port, bool allowBroadcast) {
         return "cannot create a UDP socket";
     }
     int on = 1;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&on), sizeof(on));
+    if (shared) {
+        setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&on), sizeof(on));
+    }
+#if defined(_WIN32)
+    else {
+        // Without it Windows lets another socket that asks for reuse take the port anyway.
+        setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&on), sizeof(on));
+    }
+#endif
     if (allowBroadcast) {
         setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&on), sizeof(on));
     }
@@ -162,7 +170,7 @@ std::string LanSocket::Open(uint16_t port, bool allowBroadcast) {
     if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         CloseSocket(s);
         Close();
-        return "UDP port " + std::to_string(port) + " is in use";
+        return "UDP port " + std::to_string(port) + " is in use (is another game hosting on this PC?)";
     }
     SetNonBlocking(s);
 #if defined(_WIN32)

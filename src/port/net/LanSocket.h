@@ -33,7 +33,9 @@ class LanSocket {
     static bool IsSupported();
 
     // Binds to every interface. Port 0 picks a free one. Returns an error message, empty on success.
-    std::string Open(uint16_t port, bool allowBroadcast);
+    // `shared`: other sockets may bind the same port (LAN discovery). Otherwise a port in use is an error, so that a
+    // second host on the same PC is told so instead of both silently receiving each other's players.
+    std::string Open(uint16_t port, bool allowBroadcast, bool shared = false);
     void Close();
     bool IsOpen() const;
     uint16_t LocalPort() const;

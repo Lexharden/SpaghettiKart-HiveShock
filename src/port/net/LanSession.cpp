@@ -43,6 +43,11 @@ constexpr auto kGameTimeout = std::chrono::seconds(10);
 constexpr auto kJoinTimeout = std::chrono::seconds(5);
 constexpr auto kResendWhileWaiting = std::chrono::milliseconds(4);
 constexpr auto kFrameWaitBudget = std::chrono::milliseconds(8); // per displayed frame, see LanSession_FrameReady
+// Receive buffers. The start packet (settings and the 512-byte save) is the largest, about 1.3 KB; it used to be read
+// into 1500 bytes, so a few more synced settings would have made every start fail silently.
+constexpr size_t kMaxDatagram = 8192;
+// Above this a datagram is split into IP fragments; it still arrives, but losing any fragment loses all of it.
+constexpr size_t kUnfragmentedDatagram = 1400;
 
 enum PacketType : uint8_t {
     kHello = 1,
@@ -682,7 +687,7 @@ void HostHandle(PacketType type, Reader& r, const LanAddress& from) {
 
 void HostService() {
     Session& s = S();
-    uint8_t buffer[1500];
+    uint8_t buffer[kMaxDatagram];
     LanAddress from;
     int got;
     while (s.state != Lan::State::Idle && (got = s.socket.Receive(buffer, sizeof(buffer), from)) > 0) {
@@ -896,7 +901,7 @@ void ClientHandle(PacketType type, Reader& r, const LanAddress& from) {
 
 void ClientService() {
     Session& s = S();
-    uint8_t buffer[1500];
+    uint8_t buffer[kMaxDatagram];
     LanAddress from;
     int got;
     while (s.state != Lan::State::Idle && (got = s.socket.Receive(buffer, sizeof(buffer), from)) > 0) {
@@ -1226,7 +1231,7 @@ std::string Host(const std::string& playerName) {
     if (std::string err = s.socket.Open(kGamePort, false); !err.empty()) {
         return err;
     }
-    if (std::string err = s.discovery.Open(kDiscoveryPort, true); !err.empty()) {
+    if (std::string err = s.discovery.Open(kDiscoveryPort, true, true); !err.empty()) {
         SPDLOG_WARN("[LAN] Discovery disabled: {}", err); // joining by IP still works
     }
     s.isHost = true;
@@ -1304,6 +1309,12 @@ std::string StartGame() {
     w.Put16(static_cast<uint16_t>(s.hostSave.size()));
     w.Bytes(s.hostSave.data(), s.hostSave.size());
     s.startPacket = w.Data();
+    if (s.startPacket.size() > kMaxDatagram) {
+        return "The settings to share do not fit in one packet (" + std::to_string(s.startPacket.size()) + " bytes).";
+    }
+    if (s.startPacket.size() > kUnfragmentedDatagram) {
+        SPDLOG_WARN("[LAN] Start packet is {} bytes: it travels in IP fragments", s.startPacket.size());
+    }
     for (int i = 1; i < kMaxPlayers; i++) {
         s.peers[i].started = false;
         if (s.peers[i].present) {
@@ -1334,7 +1345,7 @@ void SearchGames() {
 std::vector<FoundGame> FoundGames() {
     Session& s = S();
     if (s.state == State::Idle && s.discovery.IsOpen()) {
-        uint8_t buffer[512];
+        uint8_t buffer[kMaxDatagram];
         LanAddress from;
         int got;
         while ((got = s.discovery.Receive(buffer, sizeof(buffer), from)) > 0) {
