@@ -1,5 +1,6 @@
 #include "LanReplay.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -198,8 +199,17 @@ extern "C" void LanReplay_ResetToKnownState(unsigned short seed) {
 extern "C" unsigned long long LanReplay_StateHash(void) {
     uint64_t h = 0xCBF29CE484222325ull;
     // The first 0xE0 bytes of each player hold position, speed, rotation, lap, rank and effects, and no pointers.
+    // unk_002 is left out: it holds per-screen render flags (kart side, animation texture to upload), which the
+    // renderer rewrites and which may differ between machines without the race differing.
+    constexpr size_t kHashedBytes = 0xE0;
+    constexpr size_t kRenderFlags = offsetof(Player, unk_002);
+    static_assert(sizeof(Player) >= kHashedBytes, "Player shrank: review LanReplay_StateHash");
+    static_assert(kRenderFlags + sizeof(gPlayers[0].unk_002) <= kHashedBytes, "unk_002 moved");
     for (int i = 0; i < NUM_PLAYERS; i++) {
-        h = Fnv(h, &gPlayers[i], 0xE0);
+        uint8_t bytes[kHashedBytes];
+        std::memcpy(bytes, &gPlayers[i], kHashedBytes);
+        std::memset(bytes + kRenderFlags, 0, sizeof(gPlayers[i].unk_002));
+        h = Fnv(h, bytes, kHashedBytes);
     }
     h = Fnv(h, &gRandomSeed16, sizeof(gRandomSeed16));
     h = Fnv(h, &gGamestate, sizeof(gGamestate));

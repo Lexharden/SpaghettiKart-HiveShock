@@ -39,6 +39,7 @@ constexpr auto kLobbyTimeout = std::chrono::seconds(5);
 constexpr auto kGameTimeout = std::chrono::seconds(10);
 constexpr auto kJoinTimeout = std::chrono::seconds(5);
 constexpr auto kResendWhileWaiting = std::chrono::milliseconds(4);
+constexpr auto kFrameWaitBudget = std::chrono::milliseconds(8); // per displayed frame, see LanSession_FrameReady
 
 enum PacketType : uint8_t {
     kHello = 1,
@@ -222,6 +223,11 @@ struct FrameSlot {
     PadBytes pads[Lan::kMaxPlayers];
 };
 
+struct PendingHash {
+    uint32_t frame = UINT32_MAX;
+    uint64_t hash = 0;
+};
+
 struct SavedCVar {
     std::string name;
     bool existed = false;
@@ -263,7 +269,11 @@ struct Session {
     std::array<FrameSlot, kRing> frames{};
     std::array<uint64_t, kRing> hashes{};
     std::array<uint32_t, kRing> hashFrames{};
+    // Host: clients' hashes that arrived before the host had simulated that frame.
+    std::array<std::array<PendingHash, kRing>, Lan::kMaxPlayers> clientHashes{};
     std::string waitingFor;
+    Clock::time_point waitStart{};    // since when frame `frame` is awaited; empty when not waiting
+    Clock::time_point lastInputSend{}; // client
     std::vector<uint8_t> startPacket; // host: resent until each client confirms
 
     std::vector<Lan::FoundGame> found;
@@ -280,6 +290,8 @@ struct AutoConfig {
     bool checked = false;
     int autostart = 0;
     FILE* log = nullptr;
+    bool dump = false;
+    long long fakeDesyncFrom = -1;
 };
 AutoConfig sAuto;
 
@@ -446,6 +458,19 @@ void Finish(const std::string& why, bool notifyOthers) {
 
 // ---- Host ----
 
+// Host: the host's own hash for frame `f` is known. A different one from a client ends the game for everyone.
+void CompareHash(int slot, uint32_t f, uint64_t clientHash) {
+    Session& s = S();
+    if (s.hashes[f % kRing] == clientHash) {
+        return;
+    }
+    SPDLOG_ERROR("[LAN] Desync with {} at frame {}: host {:016x}, client {:016x}", s.peers[slot].name, f,
+                 s.hashes[f % kRing], clientHash);
+    Finish("Out of sync with " + s.peers[slot].name + " at frame " + std::to_string(f) +
+               ". Check that everyone uses the same package and the same mods.",
+           true);
+}
+
 void HostSendLobby() {
     Session& s = S();
     Writer w(kLobby);
@@ -538,12 +563,15 @@ void HostHandle(PacketType type, Reader& r, const LanAddress& from) {
             }
             const uint32_t f = r.Get32();
             const uint64_t hash = r.Get64();
-            if (r.Ok() && s.hashFrames[f % kRing] == f && s.hashes[f % kRing] != hash) {
-                SPDLOG_ERROR("[LAN] Desync with {} at frame {}: host {:016x}, client {:016x}", s.peers[slot].name, f,
-                             s.hashes[f % kRing], hash);
-                Finish("Out of sync with " + s.peers[slot].name + " at frame " + std::to_string(f) +
-                           ". Check that everyone uses the same package and the same mods.",
-                       true);
+            if (!r.Ok() || !s.started) {
+                return;
+            }
+            if (s.hashFrames[f % kRing] == f) {
+                CompareHash(slot, f, hash);
+            } else {
+                // The client can simulate a frame before the host does (it only needs the host's packet): keep the
+                // hash until the host has its own.
+                s.clientHashes[slot][f % kRing] = { f, hash };
             }
             break;
         }
@@ -668,9 +696,11 @@ void HostPublishFrames() {
 
 // ---- Client ----
 
-void ClientSendInput() {
+// Sends this machine's pads up to `s.frame + lastOffset`: kInputDelay once the newest pad is stored, one less before
+// (an empty slot must never travel as if it were a released pad).
+void ClientSendInput(int lastOffset) {
     Session& s = S();
-    const uint32_t last = s.frame + kInputDelay;
+    const uint32_t last = s.frame + static_cast<uint32_t>(lastOffset);
     const uint32_t first = last + 1 >= static_cast<uint32_t>(kRedundantFrames) ? last + 1 - kRedundantFrames : 0;
     Writer w(kInput);
     w.Put8(static_cast<uint8_t>(s.localSlot));
@@ -845,7 +875,59 @@ std::string NameOf(int slot) {
     return n.empty() ? "player " + std::to_string(slot + 1) : n;
 }
 
-// Fills `pads` with the agreed frame, waiting for it if necessary. False if the session ended meanwhile.
+// Services the network once and reports whether frame `s.frame` is complete. While it is not, keeps track of who is
+// being waited for and ends the session after kGameTimeout (then the state is Idle). `ownPadStored`: this machine's pad
+// for `s.frame + kInputDelay` is already in the ring and may be sent. `sendNow`: send it without waiting for the resend
+// interval (a new pad was just stored).
+bool FrameArrived(bool ownPadStored, bool sendNow) {
+    Session& s = S();
+    Service();
+    if (s.state == Lan::State::Idle) {
+        return false;
+    }
+    const auto now = Clock::now();
+    if (s.isHost) {
+        HostPublishFrames();
+    } else if (sendNow || now - s.lastInputSend >= kResendWhileWaiting) {
+        ClientSendInput(ownPadStored ? kInputDelay : kInputDelay - 1);
+        s.lastInputSend = now;
+    }
+
+    const FrameSlot& fs = s.frames[s.frame % kRing];
+    const uint8_t needed = s.isHost ? PresentMask() : 0xFF;
+    if (fs.frame == s.frame && (fs.present & needed) == needed) {
+        s.waitStart = {};
+        if (!s.waitingFor.empty()) {
+            std::lock_guard lock(s.mutex);
+            s.waitingFor.clear();
+        }
+        return true;
+    }
+
+    if (s.waitStart == Clock::time_point{}) {
+        s.waitStart = now;
+    }
+    if (s.waitingFor.empty() && now - s.waitStart > std::chrono::milliseconds(100)) {
+        std::lock_guard lock(s.mutex);
+        if (s.isHost) {
+            for (int i = 1; i < Lan::kMaxPlayers; i++) {
+                if (s.peers[i].present && !(fs.frame == s.frame && (fs.present & (1 << i)))) {
+                    s.waitingFor = NameOf(i);
+                    break;
+                }
+            }
+        } else {
+            s.waitingFor = NameOf(0);
+        }
+    }
+    if (now - s.waitStart > kGameTimeout) {
+        Finish(s.waitingFor.empty() ? "Lost the connection." : s.waitingFor + " is not responding.", true);
+    }
+    return false;
+}
+
+// Fills `pads` with the agreed frame. LanSession_FrameReady() has normally seen it arrive already; if not, waits.
+// False if the session ended meanwhile.
 bool LockstepFrame(OSContPad* pads) {
     Session& s = S();
     // The menus stay usable during a game: whatever was changed there that would desync it is put back.
@@ -860,47 +942,14 @@ bool LockstepFrame(OSContPad* pads) {
     own.pads[s.localSlot] = FromPad(pads[0]);
     own.present |= 1 << s.localSlot;
 
-    const auto waitStart = Clock::now();
-    auto lastSend = Clock::time_point{};
-    while (true) {
-        Service();
+    bool sendNow = true;
+    while (!FrameArrived(true, sendNow)) {
         if (s.state == Lan::State::Idle) {
             return false;
         }
-        const auto now = Clock::now();
-        if (s.isHost) {
-            HostPublishFrames();
-        } else if (now - lastSend >= kResendWhileWaiting) {
-            ClientSendInput();
-            lastSend = now;
-        }
-
-        const FrameSlot& fs = s.frames[s.frame % kRing];
-        const uint8_t needed = s.isHost ? PresentMask() : 0xFF;
-        if (fs.frame == s.frame && (fs.present & needed) == needed) {
-            break;
-        }
-
-        if (s.waitingFor.empty() && now - waitStart > std::chrono::milliseconds(100)) {
-            std::lock_guard lock(s.mutex);
-            if (s.isHost) {
-                for (int i = 1; i < Lan::kMaxPlayers; i++) {
-                    if (s.peers[i].present && !(fs.frame == s.frame && (fs.present & (1 << i)))) {
-                        s.waitingFor = NameOf(i);
-                        break;
-                    }
-                }
-            } else {
-                s.waitingFor = NameOf(0);
-            }
-        }
-        if (now - waitStart > kGameTimeout) {
-            Finish(s.waitingFor.empty() ? "Lost the connection." : s.waitingFor + " is not responding.", true);
-            return false;
-        }
+        sendNow = false;
         s.socket.WaitReadable(1);
     }
-    s.waitingFor.clear();
 
     const FrameSlot& fs = s.frames[s.frame % kRing];
     for (int i = 0; i < Lan::kMaxPlayers; i++) {
@@ -916,12 +965,17 @@ void BeginGame() {
     LanReplay_ResetToKnownState(s.seed);
     s.frames.fill(FrameSlot{});
     s.hashFrames.fill(UINT32_MAX);
+    for (auto& slotHashes : s.clientHashes) {
+        slotHashes.fill(PendingHash{});
+    }
     // The first frames have no input yet: everyone starts with released pads.
     for (uint32_t f = 0; f < static_cast<uint32_t>(kInputDelay); f++) {
         FrameSlot& fs = Slot(f);
         fs.present = 0xFF;
     }
     s.frame = 0;
+    s.waitStart = {};
+    s.lastInputSend = {};
     s.started = true;
     s.startPending = false;
     {
@@ -945,6 +999,10 @@ extern "C" void LanSession_ExchangePads(void* rawPads) {
         }
         if (const char* v = EnvValue("SPAGHETTI_LAN_LOG")) {
             sAuto.log = std::fopen(v, "w");
+        }
+        sAuto.dump = EnvValue("SPAGHETTI_LAN_DUMP") != nullptr;
+        if (const char* v = EnvValue("SPAGHETTI_LAN_FAKE_DESYNC")) {
+            sAuto.fakeDesyncFrom = std::atoll(v);
         }
         std::string err;
         if (const char* v = EnvValue("SPAGHETTI_LAN_HOST")) {
@@ -977,6 +1035,24 @@ extern "C" void LanSession_ExchangePads(void* rawPads) {
     }
 }
 
+extern "C" int LanSession_FrameReady(void) {
+    Session& s = S();
+    if (!s.started) {
+        return 1;
+    }
+    // A frame a few milliseconds late still runs this time; later than that, the last image is shown again.
+    const auto deadline = Clock::now() + kFrameWaitBudget;
+    while (true) {
+        if (FrameArrived(false, false) || s.state == Lan::State::Idle) {
+            return 1; // ready, or the session ended: either way the game runs on
+        }
+        if (Clock::now() >= deadline) {
+            return 0;
+        }
+        s.socket.WaitReadable(1);
+    }
+}
+
 extern "C" void LanSession_EndFrame(void) {
     Session& s = S();
     if (sAuto.autostart > 0 && s.isHost && s.state == Lan::State::Lobby && !s.startPending &&
@@ -985,8 +1061,18 @@ extern "C" void LanSession_EndFrame(void) {
         Lan::StartGame();
     }
     if (sAuto.log != nullptr && s.started && s.frame > 0) {
-        std::fprintf(sAuto.log, "%u %d %d %04x %016llx\n", s.frame - 1, gGamestate, gRaceState, gRandomSeed16,
+        std::fprintf(sAuto.log, "%u %d %d %04x %016llx", s.frame - 1, gGamestate, gRaceState, gRandomSeed16,
                      static_cast<unsigned long long>(LanReplay_StateHash()));
+        if (sAuto.dump) { // the bytes of every player, to see which field differs
+            for (int p = 0; p < NUM_PLAYERS; p++) {
+                std::fputc(' ', sAuto.log);
+                const auto* b = reinterpret_cast<const uint8_t*>(&gPlayers[p]);
+                for (int i = 0; i < 0xE0; i++) {
+                    std::fprintf(sAuto.log, "%02x", b[i]);
+                }
+            }
+        }
+        std::fputc('\n', sAuto.log);
         std::fflush(sAuto.log);
     }
     if (s.startPending) {
@@ -1005,10 +1091,19 @@ extern "C" void LanSession_EndFrame(void) {
     if (s.isHost) {
         s.hashes[f % kRing] = hash;
         s.hashFrames[f % kRing] = f;
+        for (int slot = 1; slot < Lan::kMaxPlayers && s.started; slot++) {
+            const PendingHash early = s.clientHashes[slot][f % kRing];
+            if (early.frame == f) {
+                s.clientHashes[slot][f % kRing] = {};
+                CompareHash(slot, f, early.hash);
+            }
+        }
     } else {
+        // Test of the desync check (docs/LAN.md): from that frame on this client reports a wrong hash.
+        const long long fakeFrom = sAuto.fakeDesyncFrom;
         Writer w(kHash);
         w.Put32(f);
-        w.Put64(hash);
+        w.Put64(fakeFrom >= 0 && f >= fakeFrom ? ~hash : hash);
         Send(s.hostAddress, w);
     }
 }

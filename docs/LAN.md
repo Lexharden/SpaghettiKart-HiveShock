@@ -16,6 +16,8 @@ Up to four players, each on their own PC, in the same race. Open **Network > LAN
 For now every PC shows the same split screen. A full-screen view of your own player is the next step.
 
 Leaving (or a PC that stops responding for 10 seconds) ends the game for everyone and returns to the title screen.
+While a PC is late the others hold the last image; the window and the menu keep working, so **Network > LAN** shows
+who is being waited for and **Leave the game** works right away.
 
 ## Network
 
@@ -39,6 +41,11 @@ each player's pad for a frame and sends the complete frame to everyone; the game
 read, and every datagram repeats the last eight frames so a lost one costs nothing. A game starts with the same reset
 on every PC (`LanReplay_ResetToKnownState`). Code: `src/port/net/`.
 
+A game frame only runs once its pads are there. Until then `push_frame` shows the previous display list again and
+runs nothing else, not even the audio frame: the audio code writes into the players, so every PC must make exactly one
+audio frame per game frame. The hash leaves out `Player.unk_002`, the per-screen render flags, which the renderer may
+set differently on each PC. Client hashes that arrive before the host has simulated that frame wait for it.
+
 ## Testing without players
 
 Environment variables, read at start-up:
@@ -54,6 +61,8 @@ Environment variables, read at start-up:
 | `SPAGHETTI_LAN_HOST=<name>` / `SPAGHETTI_LAN_JOIN=<address>` | Host or join on start-up |
 | `SPAGHETTI_LAN_AUTOSTART=<n>` | The host starts once n players are in |
 | `SPAGHETTI_LAN_LOG=<file>` | State hash of every LAN frame |
+| `SPAGHETTI_LAN_DUMP=1` | Also the hashed bytes of every player in that log, to find the field that differs |
+| `SPAGHETTI_LAN_FAKE_DESYNC=<frame>` | Client only: report a wrong hash from that frame on (tests the out-of-sync stop) |
 
 Two instances on one PC:
 

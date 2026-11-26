@@ -35,6 +35,7 @@
 #include "engine/RandomItemTable.h"
 #include "engine/sky/Sky.h"
 #include "port/hiveshock/HiveShock.h"
+#include "port/net/LanSession.h"
 
 #ifdef _WIN32
 #include <locale.h>
@@ -988,6 +989,13 @@ static void ApplyPendingReset() {
 }
 
 void push_frame() {
+    // LAN game waiting for another player's pads: nothing of the frame may run, not even the audio frame (its sequence
+    // state feeds back into the game, so every machine must make exactly one per game frame). The window and the menu
+    // must stay alive, so the previous frame is shown again.
+    if (!LanSession_FrameReady()) {
+        Graphics_PushFrame(gGfxPool->gfxPool);
+        return;
+    }
     ApplyPendingReset();
     GameEngine::StartAudioFrame();
     GameEngine::Instance->StartFrame();

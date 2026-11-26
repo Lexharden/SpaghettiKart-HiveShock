@@ -12,6 +12,11 @@ extern "C" {
 // the other machines if needed. Outside a game it only services the network (lobby, discovery).
 void LanSession_ExchangePads(void* pads);
 
+// At the start of each iteration of the game loop. 0 when the next lockstep frame has not arrived yet: the caller must
+// not run any logic and shows the previous frame again, so the window and the menu keep working while a player is
+// waited for. 1 otherwise (also outside a LAN game).
+int LanSession_FrameReady(void);
+
 // After the frame's logic and rendering: starts a pending game and reports the state hash.
 void LanSession_EndFrame(void);
 
