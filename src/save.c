@@ -12,6 +12,11 @@
 #include "code_80057C60.h"
 #include "port/Game.h"
 #include "buffers.h"
+#include "port/net/LanSession.h"
+
+// In a LAN game a client plays with the host's save data: it must not end up on this machine's disk.
+#define osEepromLongWrite(mq, address, buffer, length) \
+    (LanSession_BlocksSaving() ? 0 : osEepromLongWrite(mq, address, buffer, length))
 
 /*** macros ***/
 #define PFS_COMPANY_CODE(c0, c1) ((u16) (((c0) << 8) | ((c1))))

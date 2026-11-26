@@ -1,6 +1,7 @@
 #include "HiveShock.h"
 #include "HiveShockEffects.h"
 #include "HiveShockServer.h"
+#include "port/net/LanSession.h"
 
 #include <algorithm>
 #include <array>
@@ -348,6 +349,11 @@ void ClearPending() {
 extern "C" void HiveShock_GameTick(void) {
     using namespace HiveShock;
 
+    // A LAN game is simulated on every machine from the shared pads only: effects would desync it.
+    if (LanSession_InGame()) {
+        return;
+    }
+
     if (!RaceRunning()) {
         // Countdown, results, or a new race: the queue waits, what was active ends.
         if (sWasRunning) {
@@ -382,6 +388,9 @@ extern "C" void HiveShock_WorldCleared(void) {
 
 extern "C" void HiveShock_FilterPad(int controllerIndex, unsigned short* buttons, signed char* stickX,
                                     signed char* stickY) {
+    if (LanSession_InGame()) {
+        return;
+    }
     uint16_t b = *buttons;
     int8_t x = *stickX;
     int8_t y = *stickY;

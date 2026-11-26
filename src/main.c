@@ -43,6 +43,7 @@
 #include "engine/TrackBrowser.h"
 #include "port/hiveshock/HiveShock.h"
 #include "port/net/LanReplay.h"
+#include "port/net/LanSession.h"
 
 // Declarations (not in this file)
 void func_80091B78(void);
@@ -401,6 +402,7 @@ void read_controllers(void) {
     // osRecvMesg(&gSIEventMesgQueue, &msg, OS_MESG_BLOCK);
     osContGetReadData(gControllerPads);
     LanReplay_FilterPads(gControllerPads);
+    LanSession_ExchangePads(gControllerPads);
     update_controller(0);
     update_controller(1);
     update_controller(2);
@@ -1186,6 +1188,7 @@ void thread5_iteration(void) {
     clear_framebuffer(0); // Clear the framebuffer
     game_state_handler();
     LanReplay_EndFrame();
+    LanSession_EndFrame();
 
     // call_render_hook();
 

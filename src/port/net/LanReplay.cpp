@@ -12,6 +12,7 @@ extern "C" {
 #include "defines.h"
 #include "main.h"
 #include "buffers/random.h"
+#include "menus.h"
 }
 #include "port/Game.h"
 
@@ -22,6 +23,7 @@ constexpr int kPads = 4;
 struct Config {
     bool loaded = false;
     bool bot = false;
+    int botPlayers = 1; // the bot picks this many players in the main menu
     uint64_t botState = 0;
     FILE* record = nullptr;
     FILE* play = nullptr;
@@ -53,6 +55,9 @@ void LoadConfig() {
     if (const char* seed = Env("SPAGHETTI_NET_BOT")) {
         sConfig.bot = true;
         sConfig.botState = std::strtoull(seed, nullptr, 10) * 0x9E3779B97F4A7C15ull + 1;
+    }
+    if (const char* players = Env("SPAGHETTI_NET_BOT_PLAYERS")) {
+        sConfig.botPlayers = std::atoi(players);
     }
     if (const char* path = Env("SPAGHETTI_NET_RECORD")) {
         sConfig.record = OpenOrWarn(path, "w");
@@ -99,6 +104,13 @@ void BotFillPad(OSContPad& pad) {
 
     pad = {};
     if (gGamestate != RACING) {
+        if (gMainMenuSelection == MAIN_MENU_PLAYER_SELECT && gPlayerCount < sConfig.botPlayers) {
+            // Tap right until the wanted player count is selected.
+            if (f % 10 < 2) {
+                pad.stick_x = 80;
+            }
+            return;
+        }
         if (f % 30 < 2) {
             pad.button |= A_BUTTON;
         } else if (f % 240 >= 120 && f % 240 < 122) {

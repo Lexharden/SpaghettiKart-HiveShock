@@ -3,6 +3,7 @@
 // Determinism tooling for LAN play (docs/LAN.md). Everything here is off unless one of these environment variables
 // is set when the game starts:
 //   SPAGHETTI_NET_BOT=<seed>       synthetic input on controller 1 (menus and racing), same seed = same input
+//   SPAGHETTI_NET_BOT_PLAYERS=<n>  the bot picks n players in the main menu (default 1)
 //   SPAGHETTI_NET_RECORD=<file>    records the four pads, one frame per line
 //   SPAGHETTI_NET_PLAY=<file>      replays a recording instead of the real pads
 //   SPAGHETTI_NET_HASHLOG=<file>   writes the state hash of every frame
