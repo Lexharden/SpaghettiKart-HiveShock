@@ -8,10 +8,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <random>
 #include <thread>
 #include <libultraship.h>
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 extern "C" {
@@ -357,6 +360,76 @@ void ToPad(const PadBytes& b, OSContPad& p) {
     p.right_stick_y = b.ry;
 }
 
+// While a game lasts this machine runs with the host's settings. If anything saves the CVars meanwhile, or the game
+// stops without ending the session, the host's values would stay in this machine's config. So the local values also go
+// to a file, which the end of the session (or the next start, after a crash) uses to put them back.
+std::string RestoreFilePath() {
+    return Ship::Context::GetPathRelativeToAppDirectory("lan_restore.json");
+}
+
+void PutBack(const std::vector<SavedCVar>& cvars) {
+    for (const auto& saved : cvars) {
+        if (!saved.existed) {
+            CVarClear(saved.name.c_str());
+        } else if (saved.isFloat) {
+            CVarSetFloat(saved.name.c_str(), saved.f);
+        } else {
+            CVarSetInteger(saved.name.c_str(), saved.i);
+        }
+    }
+    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+}
+
+void WriteRestoreFile(const std::vector<SavedCVar>& cvars) {
+    nlohmann::json list = nlohmann::json::array();
+    for (const auto& saved : cvars) {
+        list.push_back({ { "name", saved.name },
+                         { "existed", saved.existed },
+                         { "isFloat", saved.isFloat },
+                         { "i", saved.i },
+                         { "f", saved.f } });
+    }
+    std::ofstream out(RestoreFilePath(), std::ios::trunc);
+    out << list.dump(2);
+    if (!out) {
+        SPDLOG_WARN("[LAN] Cannot write {}: a crash during this game could leave the host's settings here",
+                    RestoreFilePath());
+    }
+}
+
+void RemoveRestoreFile() {
+    std::error_code ignored;
+    std::filesystem::remove(RestoreFilePath(), ignored);
+}
+
+// At start-up: a LAN game was still running when the game stopped last time.
+void RecoverLocalSettings() {
+    std::ifstream in(RestoreFilePath());
+    if (!in) {
+        return;
+    }
+    const nlohmann::json list = nlohmann::json::parse(in, nullptr, false);
+    in.close();
+    std::vector<SavedCVar> cvars;
+    if (list.is_array()) {
+        for (const auto& item : list) {
+            if (!item.is_object() || !item.contains("name") || !item["name"].is_string()) {
+                continue;
+            }
+            SavedCVar saved;
+            saved.name = item["name"].get<std::string>();
+            saved.existed = item.value("existed", false);
+            saved.isFloat = item.value("isFloat", false);
+            saved.i = item.value("i", 0);
+            saved.f = item.value("f", 0.0f);
+            cvars.push_back(std::move(saved));
+        }
+    }
+    PutBack(cvars);
+    RemoveRestoreFile();
+    SPDLOG_INFO("[LAN] The last LAN game did not end normally: {} local settings put back", cvars.size());
+}
+
 void ApplyHostSettings() {
     Session& s = S();
     s.savedCVars.clear();
@@ -367,6 +440,16 @@ void ApplyHostSettings() {
         saved.i = CVarGetInteger(name.c_str(), 0);
         saved.f = CVarGetFloat(name.c_str(), 0.0f);
         s.savedCVars.push_back(saved);
+    }
+    for (const char* name : kForcedOff) {
+        SavedCVar saved{ name, CVarIsSet(name), false };
+        saved.i = CVarGetInteger(name, 0);
+        s.savedCVars.push_back(saved);
+    }
+    // Written before any value changes, so that the file always holds this machine's own settings.
+    WriteRestoreFile(s.savedCVars);
+    for (size_t i = 0; i < s.hostCVars.size() && !s.isHost; i++) {
+        const auto& [name, value] = s.hostCVars[i];
         if (!s.hostCVarIsSet[i]) {
             CVarClear(name.c_str());
         } else if (s.hostCVarIsFloat[i]) {
@@ -376,9 +459,6 @@ void ApplyHostSettings() {
         }
     }
     for (const char* name : kForcedOff) {
-        SavedCVar saved{ name, CVarIsSet(name), false };
-        saved.i = CVarGetInteger(name, 0);
-        s.savedCVars.push_back(saved);
         CVarSetInteger(name, 0);
     }
     s.savedTickLogic = gTickLogic;
@@ -397,15 +477,8 @@ void ApplyHostSettings() {
 
 void RestoreLocalSettings() {
     Session& s = S();
-    for (const auto& saved : s.savedCVars) {
-        if (!saved.existed) {
-            CVarClear(saved.name.c_str());
-        } else if (saved.isFloat) {
-            CVarSetFloat(saved.name.c_str(), saved.f);
-        } else {
-            CVarSetInteger(saved.name.c_str(), saved.i);
-        }
-    }
+    PutBack(s.savedCVars); // and saved: whatever was written during the game is overwritten
+    RemoveRestoreFile();
     s.savedCVars.clear();
     gTickLogic = s.savedTickLogic;
     gControllerBits = s.savedControllerBits;
@@ -994,6 +1067,7 @@ extern "C" void LanSession_ExchangePads(void* rawPads) {
     Session& s = S();
     if (!sAuto.checked) {
         sAuto.checked = true;
+        RecoverLocalSettings();
         if (const char* v = EnvValue("SPAGHETTI_LAN_AUTOSTART")) {
             sAuto.autostart = std::atoi(v);
         }
